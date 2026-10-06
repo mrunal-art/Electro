@@ -1,0 +1,97 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RepairHub — Local repair, picked up from your door</title>
+<style>
+:root{--navy:#08254d;--blue:#1e6fe0;--bg:#f4f7fb;--mut:#5b6b85}*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:#14213d}
+header{background:var(--navy);color:#fff;padding:12px 20px;display:flex;justify-content:space-between;align-items:center}
+main{max-width:1100px;margin:auto;padding:18px}.cols{display:grid;grid-template-columns:360px 1fr;gap:16px}
+@media(max-width:800px){.cols{grid-template-columns:1fr}}
+.card{background:#fff;border-radius:12px;padding:16px;margin-bottom:14px;box-shadow:0 1px 4px rgba(8,37,77,.1)}
+h3{margin:0 0 10px;color:var(--navy)}input,select,textarea{width:100%;padding:9px;margin:4px 0 8px;border:1px solid #c9d4e5;border-radius:8px;font:inherit}
+.btn{background:var(--blue);color:#fff;border:0;padding:9px 16px;border-radius:8px;cursor:pointer;margin:2px}.btn.red{background:#dc2626}.btn.ghost{background:none;color:#cfe0ff;border:1px solid #cfe0ff}
+.item{padding:10px;border-radius:8px;border:1px solid #e1e8f3;margin-bottom:8px;cursor:pointer}.item.on{border-color:var(--blue);background:#eef4ff}
+.badge{background:var(--navy);color:#fff;border-radius:99px;padding:2px 10px;font-size:.78rem}.mut{color:var(--mut);font-size:.85rem}
+.tl{list-style:none;margin:10px 0;padding:0 0 0 12px;border-left:3px solid var(--blue)}.tl li{padding:0 0 10px 12px}
+#chatlog{max-height:260px;overflow:auto;margin-bottom:8px}.m{padding:6px 10px;border-radius:10px;margin:4px 0;background:#eef2f8;max-width:85%}.m.me{background:#dbeafe;margin-left:auto}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}.inl{display:flex;gap:6px;flex-wrap:wrap}.inl input{flex:1;min-width:120px}
+#toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#14213d;color:#fff;padding:10px 18px;border-radius:8px;display:none}
+</style></head><body>
+<header><b>🔧 RepairHub</b><span id="who"></span></header><main id="app"></main><div id="toast"></div>
+<script>
+const $=s=>document.querySelector(s),CUR='$';
+const esc=t=>String(t??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const SEQ=['requested','accepted','received','diagnosed','repairing','quality_check','ready','delivered'];
+const LBL={requested:'Requested',accepted:'Accepted – pickup scheduled',received:'Received at shop',diagnosed:'Diagnosed',repairing:'Repairing',quality_check:'Quality check',ready:'Ready for delivery',delivered:'Delivered',rejected:'Rejected'};
+let S={user:null,oid:null,sig:{},mode:'login',timers:[]};
+function toast(m){const t=$('#toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',3000)}
+async function api(p,m='GET',b){
+  const r=await fetch('/api'+p,{method:m,headers:{'Content-Type':'application/json',...(localStorage.t?{Authorization:'Bearer '+localStorage.t}:{})},body:b?JSON.stringify(b):undefined});
+  const d=await r.json().catch(()=>({}));if(!r.ok){if(r.status===401&&!p.startsWith('/auth'))logout();throw new Error(d.error||'Request failed')}return d}
+function logout(){localStorage.removeItem('t');S.timers.forEach(clearInterval);S={user:null,oid:null,sig:{},mode:'login',timers:[]};authView()}
+
+/* ---------- auth ---------- */
+function authView(){$('#who').innerHTML='';const reg=S.mode==='register';
+$('#app').innerHTML=`<div class="card" style="max-width:420px;margin:30px auto"><h3>${reg?'Create account':'Log in'}</h3>
+<form onsubmit="auth(event)">${reg?`<input name=name placeholder="Full name" required>
+<select name=role id=role onchange="$('#sf').style.display=this.value==='shop'?'block':'none'"><option value=customer>I need a repair (customer)</option><option value=shop>I run a repair shop</option></select>`:''}
+<input name=email type=email placeholder=Email required><input name=password type=password placeholder="Password (6+ chars)" required>
+${reg?`<div id=sf style="display:none"><input name=sname placeholder="Shop name"><input name=city placeholder="City / area">
+<div class=row><input name=lat placeholder="Latitude"><input name=lng placeholder="Longitude"></div>
+<div class=mut>Services: <label><input type=checkbox name=dt value=mobile checked style="width:auto"> Mobile</label>
+<label><input type=checkbox name=dt value=laptop style="width:auto"> Laptop</label>
+<label><input type=checkbox name=dt value=appliance style="width:auto"> Appliance</label></div></div>`:''}
+<button class=btn>${reg?'Register':'Log in'}</button></form>
+<p class=mut><a href=# onclick="S.mode='${reg?'login':'register'}';authView();return false">${reg?'Have an account? Log in':'New here? Register'}</a></p>
+${reg?'':'<p class=mut>Demo: customer@demo.com / demo123 · shop1@demo.com / demo123 · admin@demo.com / admin123</p>'}</div>`}
+async function auth(e){e.preventDefault();const f=new FormData(e.target),reg=S.mode==='register';
+const b={email:f.get('email'),password:f.get('password')};
+if(reg){b.name=f.get('name');b.role=f.get('role');if(b.role==='shop')b.shop={name:f.get('sname'),city:f.get('city'),lat:parseFloat(f.get('lat'))||null,lng:parseFloat(f.get('lng'))||null,device_types:f.getAll('dt')}}
+try{const d=await api(reg?'/auth/register':'/auth/login','POST',b);localStorage.t=d.token;S.user=d.user;dash()}catch(x){toast(x.message)}}
+
+/* ---------- dashboard ---------- */
+function dash(){const r=S.user.role;$('#who').innerHTML=`${esc(S.user.name)} <span class=badge>${r}</span> <button class="btn ghost" onclick="logout()">Logout</button>`;
+$('#app').innerHTML=`<div class=cols><div>${r==='customer'?bookingForm():''}<div class=card><h3>${r==='customer'?'My repairs':r==='shop'?'Incoming & active jobs':'All orders'}</h3><div id=list>Loading…</div></div></div>
+<div id=detail><div class=card>${r==='admin'?'<div id=ov></div>':'<p class=mut>Select an order to see details, chat and tracking.</p>'}</div></div></div>`;
+loadOrders();if(r==='admin')overview();S.timers.push(setInterval(loadOrders,8000),setInterval(refresh,4000))}
+function bookingForm(){return`<div class=card><h3>Book a pickup</h3><form onsubmit="book(event)">
+<select name=device_type><option value=mobile>Mobile phone</option><option value=laptop>Laptop</option><option value=appliance>Home appliance</option></select>
+<div class=row><input name=brand placeholder=Brand required><input name=model placeholder=Model required></div>
+<textarea name=issue placeholder="Describe the issue (min 10 chars)" required></textarea>
+<textarea name=address placeholder="Pickup address" required></textarea>
+<div class=row><input type=date name=date required min="${new Date().toISOString().slice(0,10)}"><select name=slot><option>9am–12pm</option><option>12pm–4pm</option><option>4pm–8pm</option></select></div>
+<input type=hidden name=lat><input type=hidden name=lng>
+<button type=button class=btn onclick="geo(this)">📍 Use my location (finds nearest shop)</button> <button class=btn>Book pickup</button></form></div>`}
+function geo(b){navigator.geolocation?.getCurrentPosition(p=>{const f=b.form;f.lat.value=p.coords.latitude;f.lng.value=p.coords.longitude;toast('Location added')},()=>toast('Location unavailable'))}
+async function book(e){e.preventDefault();const f=Object.fromEntries(new FormData(e.target));f.slot=f.date+' '+f.slot;
+try{const d=await api('/orders','POST',f);toast('Booked! Routed to '+d.shop);e.target.reset();await loadOrders();openOrder(d.id)}catch(x){toast(x.message)}}
+async function loadOrders(){try{const o=await api('/orders');$('#list').innerHTML=o.map(x=>`<div class="item ${x.id===S.oid?'on':''}" onclick="openOrder(${x.id})">
+<b>#${x.id} ${esc(x.brand)} ${esc(x.model)}</b> <span class=badge>${LBL[x.status]||x.status}</span><div class=mut>${esc(x.device_type)} · ${esc(S.user.role==='customer'?x.shop_name:x.customer_name)}</div></div>`).join('')||'<p class=mut>No orders yet.</p>'}catch(x){}}
+async function overview(){const d=await api('/admin/overview');$('#ov').innerHTML=`<h3>Platform overview</h3><p>Users: ${esc(JSON.stringify(d.users))}</p><p>Orders: ${esc(JSON.stringify(d.orders))}</p><p>Revenue: ${CUR}${d.revenue}</p><p class=mut>Shops: ${d.shops.map(s=>esc(s.name)).join(', ')}</p>`}
+
+/* ---------- order detail ---------- */
+async function openOrder(id){S.oid=id;S.sig={};$('#detail').innerHTML=`<div id=info></div><div class=card><h3>Chat</h3><div id=chatlog></div>
+<form class=inl onsubmit="send(event)"><input id=msg placeholder="Type a message…" autocomplete=off><button class=btn>Send</button></form></div>`;await refresh();loadOrders()}
+async function refresh(){if(!S.oid||!$('#info'))return;let d;try{d=await api('/orders/'+S.oid)}catch(x){return}
+const a=JSON.stringify([d.order,d.events]);if(a!==S.sig.a){S.sig.a=a;$('#info').innerHTML=info(d)}
+const b=JSON.stringify(d.messages);if(b!==S.sig.b){S.sig.b=b;const l=$('#chatlog');l.innerHTML=d.messages.map(m=>`<div class="m ${m.sender_id===S.user.id?'me':''}"><b>${esc(m.sender)}</b> <span class=mut>${m.role}</span><br>${esc(m.body)}</div>`).join('')||'<p class=mut>No messages yet.</p>';l.scrollTop=l.scrollHeight}}
+function info(d){const o=d.order;return`<div class=card><h3>#${o.id} ${esc(o.brand)} ${esc(o.model)} <span class=badge>${LBL[o.status]||o.status}</span></h3>
+<p><b>Issue:</b> ${esc(o.issue)}</p><p class=mut>Pickup: ${esc(o.address)} · ${esc(o.slot)}<br>Shop: ${esc(o.shop_name)} · Customer: ${esc(o.customer_name)}</p>
+${o.quote!=null?`<p><b>Quote: ${CUR}${o.quote}</b> ${o.approved?'✅ approved':'(awaiting approval)'} ${o.paid?'· 💳 paid':''}<br>${esc(o.quote_note||'')}</p>`:''}
+<div>${acts(o)}</div><ul class=tl>${d.events.map(e=>`<li><b>${LBL[e.status]||e.status}</b><br><span class=mut>${esc(e.note)} · ${e.at.replace('T',' ').slice(0,16)}</span></li>`).join('')}</ul></div>`}
+function acts(o){const r=S.user.role,i=SEQ.indexOf(o.status),nx=SEQ[i+1];let h='';
+if(r==='shop'){
+ if(o.status==='requested')return`<button class=btn onclick="act('decision',{accept:true})">Accept job</button><button class="btn red" onclick="act('decision',{accept:false})">Reject</button>`;
+ if(['received','diagnosed'].includes(o.status)&&!o.approved)h+=`<form class=inl onsubmit="quote(event)"><input id=qa type=number step=0.01 min=1 placeholder="Quote amount" required value="${o.quote??''}"><input id=qn placeholder="Diagnosis / repair notes" value="${esc(o.quote_note||'')}"><button class=btn>${o.quote?'Update':'Send'} quote</button></form>`;
+ if(nx&&nx!=='diagnosed'){h+=(nx==='repairing'&&!o.approved)?'<p class=mut>Waiting for customer to approve the quote…</p>':`<button class=btn onclick="act('status',{status:'${nx}'})">Mark: ${LBL[nx]}</button>`}}
+if(r==='customer'){
+ if(o.status==='diagnosed'&&!o.approved&&o.quote!=null)h+=`<button class=btn onclick="act('approve',{approve:true})">Approve quote</button><button class="btn red" onclick="changes()">Request changes</button>`;
+ if(o.approved&&!o.paid)h+=`<button class=btn onclick="pay()">Pay ${CUR}${o.quote} (demo)</button>`}
+return h}
+async function act(p,b){try{await api(`/orders/${S.oid}/${p}`,'POST',b);S.sig={};await refresh();loadOrders()}catch(x){toast(x.message)}}
+const quote=e=>{e.preventDefault();act('quote',{amount:$('#qa').value,note:$('#qn').value})};
+const changes=async()=>{const n=prompt('What would you like changed?');if(n){await act('approve',{approve:false,note:n});api(`/orders/${S.oid}/messages`,'POST',{body:'Requested changes to quote: '+n}).then(refresh)}};
+const pay=async()=>{if(confirm('Demo payment – no real charge. Continue?')){await act('pay',{});toast('Payment received')}};
+async function send(e){e.preventDefault();const m=$('#msg');if(!m.value.trim())return;try{await api(`/orders/${S.oid}/messages`,'POST',{body:m.value});m.value='';refresh()}catch(x){toast(x.message)}}
+
+(async()=>{if(localStorage.t){try{S.user=await api('/me');return dash()}catch(x){}}authView()})();
+</script></body></html>
